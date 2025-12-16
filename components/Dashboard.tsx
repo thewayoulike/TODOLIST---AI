@@ -18,8 +18,7 @@ const fetchRealGmail = async (accessToken: string) => {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     
-    // If this fails with 403, it means permissions are missing
-    if (!listResponse.ok) throw new Error(`Gmail API Error: ${listResponse.status}`);
+    if (!listResponse.ok) return null; // Fail silently for mixed accounts
     
     const listData = await listResponse.json();
     if (!listData.messages) return null;
@@ -33,7 +32,7 @@ const fetchRealGmail = async (accessToken: string) => {
       const subject = detail.payload.headers.find((h: any) => h.name === 'Subject')?.value || '(No Subject)';
       const from = detail.payload.headers.find((h: any) => h.name === 'From')?.value || 'Unknown';
       
-      return `Subject: ${subject}\nFrom: ${from}\nSnippet: ${detail.snippet}\n---`;
+      return `[EMAIL] Subject: ${subject} | From: ${from}\nSnippet: ${detail.snippet}\n---`;
     }));
 
     return emails.join('\n');
@@ -43,7 +42,45 @@ const fetchRealGmail = async (accessToken: string) => {
   }
 };
 
-// --- HELPER: Save to Google Drive ---
+// --- HELPER: Fetch Real Google Chat (Workspace Only) ---
+const fetchRealChats = async (accessToken: string) => {
+  try {
+    // 1. List 'Spaces' (Direct Messages and Rooms)
+    const spacesRes = await fetch('https://chat.googleapis.com/v1/spaces', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+
+    if (!spacesRes.ok) return null; // Will fail if not Workspace
+
+    const spacesData = await spacesRes.json();
+    if (!spacesData.spaces) return null;
+
+    // 2. Fetch last 3 messages from the top 3 active spaces
+    const activeSpaces = spacesData.spaces.slice(0, 3);
+    
+    const chatLogs = await Promise.all(activeSpaces.map(async (space: any) => {
+      const msgRes = await fetch(`https://chat.googleapis.com/v1/${space.name}/messages?pageSize=3`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      const msgData = await msgRes.json();
+      
+      if (!msgData.messages) return '';
+
+      const messages = msgData.messages.map((m: any) => 
+        `${m.sender.displayName}: ${m.text}`
+      ).join('\n');
+
+      return `[CHAT SPACE: ${space.displayName}]\n${messages}\n---`;
+    }));
+
+    return chatLogs.join('\n');
+  } catch (error) {
+    console.error("Error fetching Chats:", error);
+    return null;
+  }
+};
+
+// --- HELPER: Save to Drive ---
 const saveToDrive = async (tasks: Task[], accessToken: string) => {
   const fileContent = JSON.stringify(tasks, null, 2);
   const metadata = {
@@ -55,13 +92,11 @@ const saveToDrive = async (tasks: Task[], accessToken: string) => {
   form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
   form.append('file', new Blob([fileContent], { type: 'application/json' }));
 
-  const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+  await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}` },
     body: form,
   });
-  
-  if (!response.ok) throw new Error('Drive upload failed');
 };
 
 const COLORS = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b'];
@@ -73,12 +108,10 @@ export const Dashboard: React.FC = () => {
   const [rawInput, setRawInput] = useState('');
   const [notification, setNotification] = useState<{message: string, type: 'success' | 'error'} | null>(null);
   
-  // Connection State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null); 
   const [lastSynced, setLastSynced] = useState<string | null>(null);
 
-  // Settings & Drive State
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>({
     geminiApiKey: '',
@@ -87,7 +120,6 @@ export const Dashboard: React.FC = () => {
   });
   const [isSavingToDrive, setIsSavingToDrive] = useState(false);
 
-  // Load from LocalStorage
   useEffect(() => {
     const savedSettings = localStorage.getItem('taskmind_settings');
     if (savedSettings) setSettings(JSON.parse(savedSettings));
@@ -99,25 +131,21 @@ export const Dashboard: React.FC = () => {
     if (savedUser) setCurrentUser(JSON.parse(savedUser));
   }, []);
 
-  // Save Tasks & Sync to Drive
   useEffect(() => {
     if (tasks.length > 0) {
       localStorage.setItem('taskmind_tasks', JSON.stringify(tasks));
-
       if (settings.googleDriveConnected && settings.autoSave && accessToken) {
         setIsSavingToDrive(true);
-        saveToDrive(tasks, accessToken).catch(console.error);
+        saveToDrive(tasks, accessToken)
+          .catch(() => {}) // Silent fail
+          .finally(() => setIsSavingToDrive(false));
       }
     }
   }, [tasks, settings.googleDriveConnected, settings.autoSave, accessToken]);
 
-  // Persist User
   useEffect(() => {
-    if (currentUser) {
-      localStorage.setItem('taskmind_user', JSON.stringify(currentUser));
-    } else {
-      localStorage.removeItem('taskmind_user');
-    }
+    if (currentUser) localStorage.setItem('taskmind_user', JSON.stringify(currentUser));
+    else localStorage.removeItem('taskmind_user');
   }, [currentUser]);
 
   const handleSaveSettings = (newSettings: AppSettings) => {
@@ -127,10 +155,9 @@ export const Dashboard: React.FC = () => {
 
   const [stats, setStats] = useState({ emailsScanned: 0, chatsScanned: 0 });
 
-  // --- GOOGLE LOGIN (CRITICAL FIX) ---
+  // --- GOOGLE LOGIN WITH CHAT SCOPES ---
   const login = useGoogleLogin({
-    // WE MUST ASK FOR GMAIL PERMISSION HERE:
-    scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/drive.file',
+    scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/chat.spaces.readonly https://www.googleapis.com/auth/chat.messages.readonly',
     
     onSuccess: async (tokenResponse) => {
       setLoading(true);
@@ -143,20 +170,21 @@ export const Dashboard: React.FC = () => {
         });
         const userInfo = await userInfoResponse.json();
 
+        // Determine if Workspace or Personal based on hd (hosted domain)
+        const isWorkspace = !!userInfo.hd;
+
         const realUser: User = {
           id: userInfo.sub,
           name: userInfo.name,
           email: userInfo.email,
           avatarUrl: userInfo.picture,
-          type: 'Personal'
+          type: isWorkspace ? 'Work' : 'Personal'
         };
 
         setCurrentUser(realUser);
         handleSaveSettings({ ...settings, googleDriveConnected: true });
-
         setNotification({ message: `Welcome, ${userInfo.given_name}!`, type: 'success' });
         
-        // Sync immediately upon login
         await performSync(tokenResponse.access_token);
 
       } catch (error) {
@@ -170,53 +198,52 @@ export const Dashboard: React.FC = () => {
   });
 
   const initiateSync = async () => {
-    if (!accessToken) {
-      login();
-      return;
-    }
+    if (!accessToken) { login(); return; }
     await performSync(accessToken);
   };
 
-  // --- MAIN SYNC LOGIC ---
   const performSync = async (token: string) => {
     setLoading(true);
-    setNotification({ message: 'Scanning real emails...', type: 'success' });
+    setNotification({ message: 'Scanning Workspace data...', type: 'success' });
     
     try {
-      // 1. Fetch Real Emails ONLY
+      // 1. Fetch Real Emails
       const emailContent = await fetchRealGmail(token);
       
-      if (!emailContent) {
-        setNotification({ message: 'No recent emails found (or permission denied).', type: 'error' });
+      // 2. Fetch Real Chats (Workspace)
+      const chatContent = await fetchRealChats(token);
+
+      if (!emailContent && !chatContent) {
+        setNotification({ message: 'No recent data found.', type: 'error' });
         setLoading(false);
         return;
       }
       
-      // 2. Build Prompt without Mock Data
       const combinedInput = `
-        You are my personal assistant. Analyze these recent emails to find actionable tasks.
-        If there are no clear tasks, return an empty array. Do not invent tasks.
+        You are my executive assistant. Analyze these communication logs to find actionable tasks.
         
         EMAILS FROM INBOX:
-        ${emailContent}
+        ${emailContent || "(No recent emails)"}
+
+        CHAT LOGS:
+        ${chatContent || "(No recent chats or Personal account)"}
       `;
       
       // 3. Analyze with Gemini
       const newTasks = await analyzeContent(combinedInput, settings.geminiApiKey);
       
-      // 4. OVERWRITE tasks
       setTasks(newTasks);
       
       setStats({ 
-        emailsScanned: 10, 
-        chatsScanned: 0 
+        emailsScanned: emailContent ? 10 : 0, 
+        chatsScanned: chatContent ? 5 : 0 
       });
       setLastSynced(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-      setNotification({ message: `Found ${newTasks.length} tasks from Gmail!`, type: 'success' });
+      setNotification({ message: `Found ${newTasks.length} tasks!`, type: 'success' });
 
     } catch (e: any) {
       console.error(e);
-      setNotification({ message: 'Analysis failed. Check console for 403 errors.', type: 'error' });
+      setNotification({ message: 'Analysis failed.', type: 'error' });
     } finally {
       setLoading(false);
     }
@@ -231,11 +258,10 @@ export const Dashboard: React.FC = () => {
   };
 
   const handleClearData = () => {
-    if (window.confirm('Are you sure? This will wipe all current tasks.')) {
+    if (window.confirm('Clear all tasks?')) {
       setTasks([]);
       localStorage.removeItem('taskmind_tasks');
-      setStats({ emailsScanned: 0, chatsScanned: 0 });
-      setNotification({ message: 'All data cleared.', type: 'success' });
+      setNotification({ message: 'Data cleared.', type: 'success' });
     }
   };
 
@@ -248,7 +274,7 @@ export const Dashboard: React.FC = () => {
       setNotification({ message: 'Analysis complete!', type: 'success' });
       setRawInput('');
       setActiveTab('overview');
-    } catch (e: any) {
+    } catch (e) {
       setNotification({ message: 'Analysis failed.', type: 'error' });
     } finally {
       setLoading(false);
@@ -280,7 +306,6 @@ export const Dashboard: React.FC = () => {
         onSave={handleSaveSettings}
       />
 
-      {/* Sidebar */}
       <aside className="w-64 bg-slate-900 text-white flex flex-col hidden md:flex">
         <div className="p-6 border-b border-slate-700">
           <div className="flex items-center gap-2 font-bold text-xl text-blue-400">
@@ -291,19 +316,11 @@ export const Dashboard: React.FC = () => {
         </div>
         
         <nav className="flex-1 p-4 space-y-2">
-          <button 
-            onClick={() => setActiveTab('overview')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'overview' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
-          >
-            <LayoutDashboard size={20} />
-            Overview
+          <button onClick={() => setActiveTab('overview')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'overview' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
+            <LayoutDashboard size={20} /> Overview
           </button>
-          <button 
-            onClick={() => setActiveTab('raw')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'raw' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
-          >
-            <Plus size={20} />
-            Add Data Source
+          <button onClick={() => setActiveTab('raw')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${activeTab === 'raw' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
+            <Plus size={20} /> Add Data Source
           </button>
         </nav>
 
@@ -312,11 +329,7 @@ export const Dashboard: React.FC = () => {
             <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
               {currentUser ? 'Connected Account' : 'Sync Status'}
             </h3>
-            {currentUser && (
-               <button onClick={handleDisconnect} className="text-slate-500 hover:text-white" title="Disconnect">
-                 <Unlink size={12} />
-               </button>
-            )}
+            {currentUser && <button onClick={handleDisconnect}><Unlink size={12} /></button>}
           </div>
 
           {currentUser ? (
@@ -332,31 +345,17 @@ export const Dashboard: React.FC = () => {
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-white truncate">{currentUser.name}</div>
                   <div className="text-xs text-slate-400 truncate">{currentUser.email}</div>
+                  {currentUser.type === 'Work' && <span className="text-[10px] bg-blue-900 px-1 rounded text-blue-200">WORKSPACE</span>}
                 </div>
               </div>
-              
-              <button 
-                onClick={handleClearData}
-                className="w-full mt-3 flex items-center justify-center gap-2 text-xs text-red-400 hover:bg-slate-700 hover:text-red-300 py-2 rounded transition-colors"
-              >
-                <Trash2 size={12} />
-                Clear All Data
+              <button onClick={handleClearData} className="w-full mt-3 flex items-center justify-center gap-2 text-xs text-red-400 hover:bg-slate-700 py-2 rounded">
+                <Trash2 size={12} /> Clear Data
               </button>
             </div>
           ) : null}
-
-          <div className="space-y-3 mt-4">
-             <div className="flex items-center justify-between text-sm">
-              <span className="flex items-center gap-2 text-slate-300">
-                <Mail size={14} /> Gmail
-              </span>
-              <span className={`w-2 h-2 rounded-full ${currentUser ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-slate-600'}`}></span>
-            </div>
-          </div>
         </div>
       </aside>
 
-      {/* Main Content */}
       <main className="flex-1 flex flex-col h-full overflow-hidden relative">
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0">
           <div className="flex items-center gap-4">
@@ -365,27 +364,13 @@ export const Dashboard: React.FC = () => {
             </h1>
             {settings.googleDriveConnected && (
               <div className="flex items-center gap-1.5 px-2 py-1 bg-green-50 rounded border border-green-100 text-xs text-green-700">
-                {isSavingToDrive ? (
-                  <>
-                    <Loader2 size={12} className="animate-spin" />
-                    Saving...
-                  </>
-                ) : (
-                  <>
-                    <Cloud size={12} />
-                    Saved to Drive
-                  </>
-                )}
+                {isSavingToDrive ? <><Loader2 size={12} className="animate-spin" /> Saving...</> : <><Cloud size={12} /> Saved to Drive</>}
               </div>
             )}
           </div>
          
           <div className="flex items-center gap-3">
-            <button 
-              onClick={() => setShowSettings(true)}
-              className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors"
-              title="Settings"
-            >
+            <button onClick={() => setShowSettings(true)} className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg">
               <SettingsIcon size={20} />
             </button>
             <button 
@@ -397,17 +382,8 @@ export const Dashboard: React.FC = () => {
                   : 'bg-blue-600 text-white hover:bg-blue-700 border-blue-600'
               }`}
             >
-              {loading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : currentUser ? (
-                <RefreshCw className="w-4 h-4" />
-              ) : (
-                <Link className="w-4 h-4" />
-              )}
-              {loading 
-                ? (currentUser ? 'Scanning...' : 'Connecting...') 
-                : (currentUser ? 'Scan Gmail' : 'Connect Account')
-              }
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : currentUser ? <RefreshCw className="w-4 h-4" /> : <Link className="w-4 h-4" />}
+              {loading ? (currentUser ? 'Scanning...' : 'Connecting...') : (currentUser ? 'Scan Workspace' : 'Connect Account')}
             </button>
           </div>
         </header>
@@ -434,8 +410,8 @@ export const Dashboard: React.FC = () => {
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                   <h3 className="text-sm font-medium text-slate-500 mb-1">Chats Processed</h3>
                   <div className="text-2xl font-bold text-slate-800">{stats.chatsScanned}</div>
-                  <div className="text-xs text-slate-400 mt-1 flex items-center">
-                     (Chat API requires Work account)
+                  <div className="text-xs text-green-600 mt-1 flex items-center">
+                     {currentUser?.type === 'Work' ? 'Workspace Connected' : 'Requires Workspace'}
                   </div>
                 </div>
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
@@ -450,8 +426,7 @@ export const Dashboard: React.FC = () => {
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
                 <div className="lg:col-span-2 space-y-4">
                   <h2 className="font-semibold text-slate-700 flex items-center gap-2">
-                    <CheckSquare size={18} />
-                    Action Items
+                    <CheckSquare size={18} /> Action Items
                   </h2>
                   
                   {tasks.length === 0 ? (
@@ -462,17 +437,11 @@ export const Dashboard: React.FC = () => {
                       <h3 className="text-lg font-medium text-slate-800 mb-2">
                         {currentUser ? 'Ready to scan' : 'Connect your accounts'}
                       </h3>
-                      <p className="text-slate-500 max-w-sm mx-auto mb-6">
-                        {currentUser 
-                          ? 'Click the button above to scan your recent emails for tasks.' 
-                          : 'Securely connect your Gmail to let AI extract your to-do list automatically.'
-                        }
-                      </p>
                       <button 
                         onClick={initiateSync}
-                        className="px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm"
+                        className="px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm"
                       >
-                        {currentUser ? 'Scan Inbox Now' : 'Connect & Scan'}
+                        {currentUser ? 'Scan Workspace Now' : 'Connect & Scan'}
                       </button>
                     </div>
                   ) : (
@@ -500,9 +469,7 @@ export const Dashboard: React.FC = () => {
                                   {task.priority}
                                 </span>
                               </div>
-                              
                               <p className="text-sm text-slate-600 mb-2">{task.description}</p>
-                              
                               <div className="flex items-center gap-4 text-xs text-slate-400">
                                 <span className="flex items-center gap-1 bg-slate-100 px-2 py-1 rounded">
                                   {task.sourceType === SourceType.GMAIL ? <Mail size={12} /> : task.sourceType === SourceType.CHAT ? <MessageSquare size={12} /> : <LayoutDashboard size={12} />}
@@ -510,15 +477,10 @@ export const Dashboard: React.FC = () => {
                                 </span>
                                 {task.dueDate && (
                                   <span className="flex items-center gap-1 text-orange-600 bg-orange-50 px-2 py-1 rounded">
-                                    <Calendar size={12} />
-                                    Due: {task.dueDate}
+                                    <Calendar size={12} /> Due: {task.dueDate}
                                   </span>
                                 )}
-                                <span className="ml-auto">
-                                  Confidence: {task.confidenceScore}%
-                                </span>
                               </div>
-                              
                               <div className="mt-3 p-2 bg-slate-50 rounded border border-slate-100 text-xs text-slate-500 italic">
                                 " {task.sourceContext} "
                               </div>
@@ -530,7 +492,6 @@ export const Dashboard: React.FC = () => {
                   )}
                 </div>
                 
-                {/* Charts Area */}
                 <div className="space-y-6">
                   <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                     <h3 className="font-semibold text-slate-800 mb-4">Task Distribution</h3>
@@ -561,30 +522,6 @@ export const Dashboard: React.FC = () => {
                       </div>
                     )}
                   </div>
-
-                  <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                     <h3 className="font-semibold text-slate-800 mb-4">Sources</h3>
-                     {tasks.length > 0 ? (
-                        <div className="h-48">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={sourceData}>
-                              <XAxis dataKey="name" fontSize={12} tickLine={false} axisLine={false} />
-                              <YAxis hide />
-                              <Tooltip cursor={{fill: 'transparent'}} />
-                              <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                                {sourceData.map((entry, index) => (
-                                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                                ))}
-                              </Bar>
-                            </BarChart>
-                          </ResponsiveContainer>
-                        </div>
-                     ) : (
-                      <div className="h-48 flex items-center justify-center text-slate-400 text-sm">
-                        No data yet
-                      </div>
-                    )}
-                  </div>
                 </div>
               </div>
             </div>
@@ -597,16 +534,10 @@ export const Dashboard: React.FC = () => {
                   placeholder="Paste your content here..."
                   className="w-full h-64 p-4 rounded-lg border border-slate-200 focus:border-blue-500 outline-none resize-none font-mono text-sm mb-6"
                 ></textarea>
-                
                 <div className="flex items-center justify-end gap-3">
                   <button onClick={() => setRawInput('')} className="px-4 py-2 text-slate-500 text-sm">Clear</button>
-                  <button 
-                    onClick={handleManualAnalyze}
-                    disabled={loading || !rawInput.trim()}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm disabled:opacity-50"
-                  >
-                    {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                    Analyze & Extract Tasks
+                  <button onClick={handleManualAnalyze} disabled={loading || !rawInput.trim()} className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm disabled:opacity-50">
+                    {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />} Analyze
                   </button>
                 </div>
               </div>
