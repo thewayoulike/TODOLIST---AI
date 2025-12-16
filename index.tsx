@@ -52,8 +52,12 @@ if (!rootElement) {
 
 const root = ReactDOM.createRoot(rootElement);
 
-// REPLACE THIS STRING WITH YOUR ACTUAL CLIENT ID
-const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID_HERE";
+// This reads the ID from your Vercel Environment Variables
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || "";
+
+if (!GOOGLE_CLIENT_ID) {
+  console.warn("Missing VITE_GOOGLE_CLIENT_ID environment variable. Google Login will not work.");
+}
 
 root.render(
   <React.StrictMode>
