@@ -5,10 +5,10 @@ import {
 } from 'recharts';
 import { 
   LayoutDashboard, Mail, MessageSquare, CheckSquare, Loader2, Plus, RefreshCw,
-  AlertCircle, Calendar, Sparkles, Link, Unlink, Settings as SettingsIcon, Cloud
+  AlertCircle, Calendar, Sparkles, Link, Unlink, Settings as SettingsIcon, Cloud, Trash2
 } from 'lucide-react';
 import { analyzeContent } from '../services/gemini';
-import { MOCK_CHATS, MOCK_EMAILS } from '../utils/mockData';
+// NOTE: We removed MOCK_CHATS/EMAILS imports to prevent dummy data usage
 import { Task, Priority, SourceType, User, AppSettings } from '../types';
 import { SettingsModal } from './SettingsModal';
 
@@ -20,7 +20,7 @@ const fetchRealGmail = async (accessToken: string) => {
     });
     const listData = await listResponse.json();
     
-    if (!listData.messages) return "No recent emails found.";
+    if (!listData.messages) return null;
 
     const emails = await Promise.all(listData.messages.map(async (msg: any) => {
       const detailResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`, {
@@ -37,7 +37,7 @@ const fetchRealGmail = async (accessToken: string) => {
     return emails.join('\n');
   } catch (error) {
     console.error("Error fetching Gmail:", error);
-    return "Failed to fetch real emails.";
+    return null;
   }
 };
 
@@ -73,7 +73,7 @@ export const Dashboard: React.FC = () => {
   
   // Connection State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null); // Store token for Drive API
+  const [accessToken, setAccessToken] = useState<string | null>(null); 
   const [lastSynced, setLastSynced] = useState<string | null>(null);
 
   // Settings & Drive State
@@ -102,7 +102,6 @@ export const Dashboard: React.FC = () => {
     if (tasks.length > 0) {
       localStorage.setItem('taskmind_tasks', JSON.stringify(tasks));
 
-      // Check if we have both the "Connected" setting AND a valid access token
       if (settings.googleDriveConnected && settings.autoSave && accessToken) {
         setIsSavingToDrive(true);
         saveToDrive(tasks, accessToken)
@@ -111,7 +110,7 @@ export const Dashboard: React.FC = () => {
           })
           .catch((err) => {
             console.error(err);
-            setNotification({ message: 'Drive sync failed', type: 'error' });
+            // Don't show error toast every time, just log it
           })
           .finally(() => setIsSavingToDrive(false));
       }
@@ -136,12 +135,11 @@ export const Dashboard: React.FC = () => {
 
   // --- GOOGLE LOGIN ---
   const login = useGoogleLogin({
-    // Request permissions for GMAIL and DRIVE
     scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/drive.file',
     
     onSuccess: async (tokenResponse) => {
       setLoading(true);
-      setAccessToken(tokenResponse.access_token); // Save token for later use
+      setAccessToken(tokenResponse.access_token);
       setNotification({ message: 'Authenticating...', type: 'success' });
 
       try {
@@ -159,13 +157,11 @@ export const Dashboard: React.FC = () => {
         };
 
         setCurrentUser(realUser);
-        
-        // Auto-connect Drive setting if login succeeds
         handleSaveSettings({ ...settings, googleDriveConnected: true });
 
         setNotification({ message: `Welcome, ${userInfo.given_name}!`, type: 'success' });
         
-        // Immediate Sync with the fresh token
+        // Sync immediately upon login
         await performSync(tokenResponse.access_token);
 
       } catch (error) {
@@ -179,7 +175,6 @@ export const Dashboard: React.FC = () => {
   });
 
   const initiateSync = async () => {
-    // If we don't have a token (or it expired), force login again
     if (!accessToken) {
       login();
       return;
@@ -187,34 +182,43 @@ export const Dashboard: React.FC = () => {
     await performSync(accessToken);
   };
 
+  // --- MAIN SYNC LOGIC (FIXED) ---
   const performSync = async (token: string) => {
     setLoading(true);
     setNotification({ message: 'Scanning real emails...', type: 'success' });
     
     try {
-      // 1. Fetch Real Emails
+      // 1. Fetch Real Emails ONLY
       const emailContent = await fetchRealGmail(token);
       
+      if (!emailContent) {
+        setNotification({ message: 'No recent emails found in Inbox.', type: 'error' });
+        setLoading(false);
+        return;
+      }
+      
+      // 2. Build Prompt without Mock Data
       const combinedInput = `
-        --- RECENT EMAILS (Fetched from Gmail) ---
-        ${emailContent}
+        You are my personal assistant. Analyze these recent emails to find actionable tasks.
+        If there are no clear tasks, return an empty array. Do not invent tasks.
         
-        --- RECENT CHATS ---
-        ${MOCK_CHATS}
+        EMAILS FROM INBOX:
+        ${emailContent}
       `;
       
-      // 2. Analyze with Gemini
+      // 3. Analyze with Gemini
       const newTasks = await analyzeContent(combinedInput, settings.geminiApiKey);
       
-      setTasks(prev => {
-        const existingIds = new Set(prev.map(p => p.title));
-        const uniqueNew = newTasks.filter(t => !existingIds.has(t.title));
-        return [...uniqueNew, ...prev];
-      });
+      // 4. OVERWRITE tasks (Fixes the "stuck dummy data" issue)
+      setTasks(newTasks);
       
-      setStats({ emailsScanned: 10, chatsScanned: 0 });
+      setStats({ 
+        emailsScanned: 10, 
+        chatsScanned: 0 
+      });
       setLastSynced(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-      setNotification({ message: 'Synced with Gmail successfully!', type: 'success' });
+      setNotification({ message: `Found ${newTasks.length} tasks from Gmail!`, type: 'success' });
+
     } catch (e: any) {
       console.error(e);
       if (e.message?.includes('API Key is missing')) {
@@ -237,6 +241,16 @@ export const Dashboard: React.FC = () => {
     setNotification({ message: 'Disconnected.', type: 'success' });
   };
 
+  // --- NEW: Clear Data Button Logic ---
+  const handleClearData = () => {
+    if (window.confirm('Are you sure? This will wipe all current tasks.')) {
+      setTasks([]);
+      localStorage.removeItem('taskmind_tasks');
+      setStats({ emailsScanned: 0, chatsScanned: 0 });
+      setNotification({ message: 'All data cleared.', type: 'success' });
+    }
+  };
+
   const handleManualAnalyze = async () => {
     if (!rawInput.trim()) return;
     setLoading(true);
@@ -257,7 +271,6 @@ export const Dashboard: React.FC = () => {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, isCompleted: !t.isCompleted } : t));
   };
 
-  // --- CHART DATA ---
   const priorityData = [
     { name: 'High', value: tasks.filter(t => t.priority === Priority.HIGH && !t.isCompleted).length },
     { name: 'Medium', value: tasks.filter(t => t.priority === Priority.MEDIUM && !t.isCompleted).length },
@@ -319,22 +332,33 @@ export const Dashboard: React.FC = () => {
           </div>
 
           {currentUser ? (
-            <div className="mb-4 flex items-center gap-3 pb-4 border-b border-slate-700">
-              {currentUser.avatarUrl ? (
-                <img src={currentUser.avatarUrl} alt="Avatar" className="w-8 h-8 rounded-full" />
-              ) : (
-                <div className={`w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-xs`}>
-                  {currentUser.name.charAt(0)}
+            <div className="mb-4">
+              <div className="flex items-center gap-3 pb-4 border-b border-slate-700">
+                {currentUser.avatarUrl ? (
+                  <img src={currentUser.avatarUrl} alt="Avatar" className="w-8 h-8 rounded-full" />
+                ) : (
+                  <div className={`w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-xs`}>
+                    {currentUser.name.charAt(0)}
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-white truncate">{currentUser.name}</div>
+                  <div className="text-xs text-slate-400 truncate">{currentUser.email}</div>
                 </div>
-              )}
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium text-white truncate">{currentUser.name}</div>
-                <div className="text-xs text-slate-400 truncate">{currentUser.email}</div>
               </div>
+              
+              {/* NEW CLEAR DATA BUTTON */}
+              <button 
+                onClick={handleClearData}
+                className="w-full mt-3 flex items-center justify-center gap-2 text-xs text-red-400 hover:bg-slate-700 hover:text-red-300 py-2 rounded transition-colors"
+              >
+                <Trash2 size={12} />
+                Clear All Data
+              </button>
             </div>
           ) : null}
 
-          <div className="space-y-3">
+          <div className="space-y-3 mt-4">
              <div className="flex items-center justify-between text-sm">
               <span className="flex items-center gap-2 text-slate-300">
                 <Mail size={14} /> Gmail
