@@ -32,8 +32,8 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  avatarUrl?: string; // Added this for real Google Image
-  avatarColor?: string; // Kept this as fallback
+  avatarUrl?: string;
+  avatarColor?: string;
   type: 'Personal' | 'Work';
 }
 
@@ -42,4 +42,6 @@ export interface AppSettings {
   googleDriveConnected: boolean;
   googleDriveEmail?: string;
   autoSave: boolean;
+  // NEW FIELD:
+  customInstructions?: string; 
 }
