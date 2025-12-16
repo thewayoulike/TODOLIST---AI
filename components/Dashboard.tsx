@@ -1,37 +1,17 @@
 import React, { useState, useEffect } from 'react';
+import { useGoogleLogin } from '@react-oauth/google'; // Import the hook
 import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  Tooltip, 
-  ResponsiveContainer, 
-  Cell,
-  PieChart,
-  Pie
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie
 } from 'recharts';
 import { 
-  LayoutDashboard, 
-  Mail, 
-  MessageSquare, 
-  CheckSquare, 
-  Loader2, 
-  Plus, 
-  RefreshCw,
-  AlertCircle,
-  Calendar,
-  Sparkles,
-  Link,
-  Unlink,
-  Settings as SettingsIcon,
-  Save,
-  Cloud
+  LayoutDashboard, Mail, MessageSquare, CheckSquare, Loader2, Plus, RefreshCw,
+  AlertCircle, Calendar, Sparkles, Link, Unlink, Settings as SettingsIcon, Cloud
 } from 'lucide-react';
 import { analyzeContent } from '../services/gemini';
-import { MOCK_CHATS, MOCK_EMAILS, MOCK_USERS } from '../utils/mockData';
+import { MOCK_CHATS, MOCK_EMAILS } from '../utils/mockData'; // Removed MOCK_USERS
 import { Task, Priority, SourceType, User, AppSettings } from '../types';
-import { AccountModal } from './AccountModal';
 import { SettingsModal } from './SettingsModal';
+// Removed AccountModal import
 
 interface DashboardProps {
   // empty
@@ -49,7 +29,6 @@ export const Dashboard: React.FC<DashboardProps> = () => {
   // Connection State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [lastSynced, setLastSynced] = useState<string | null>(null);
-  const [showAuthModal, setShowAuthModal] = useState(false);
 
   // Settings & Drive State
   const [showSettings, setShowSettings] = useState(false);
@@ -60,7 +39,7 @@ export const Dashboard: React.FC<DashboardProps> = () => {
   });
   const [isSavingToDrive, setIsSavingToDrive] = useState(false);
 
-  // Load settings/tasks from localStorage on mount
+  // Load settings/tasks/USER from localStorage on mount
   useEffect(() => {
     const savedSettings = localStorage.getItem('taskmind_settings');
     if (savedSettings) {
@@ -70,20 +49,30 @@ export const Dashboard: React.FC<DashboardProps> = () => {
     if (savedTasks) {
       setTasks(JSON.parse(savedTasks));
     }
+    const savedUser = localStorage.getItem('taskmind_user');
+    if (savedUser) {
+      setCurrentUser(JSON.parse(savedUser));
+    }
   }, []);
+
+  // Persist User to LocalStorage
+  useEffect(() => {
+    if (currentUser) {
+      localStorage.setItem('taskmind_user', JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem('taskmind_user');
+    }
+  }, [currentUser]);
 
   // Save tasks to "Drive" (simulated via localStorage + delay)
   useEffect(() => {
     if (tasks.length > 0) {
-      // Always save locally
       localStorage.setItem('taskmind_tasks', JSON.stringify(tasks));
 
-      // Simulate Drive sync if connected
       if (settings.googleDriveConnected && settings.autoSave) {
         setIsSavingToDrive(true);
         const timer = setTimeout(() => {
           setIsSavingToDrive(false);
-          // In a real app, this is where we'd do the Drive API 'update' call
         }, 2000);
         return () => clearTimeout(timer);
       }
@@ -105,20 +94,61 @@ export const Dashboard: React.FC<DashboardProps> = () => {
     chatsScanned: 0
   });
 
+  // --------------------------------------------------------------------------
+  // GOOGLE LOGIN LOGIC
+  // --------------------------------------------------------------------------
+  const login = useGoogleLogin({
+    onSuccess: async (tokenResponse) => {
+      setLoading(true);
+      setNotification({ message: 'Authenticating...', type: 'success' });
+
+      try {
+        // Fetch real user info from Google
+        const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
+        });
+        const userInfo = await userInfoResponse.json();
+
+        const realUser: User = {
+          id: userInfo.sub,
+          name: userInfo.name,
+          email: userInfo.email,
+          avatarUrl: userInfo.picture,
+          type: 'Personal' // Default to Personal
+        };
+
+        setCurrentUser(realUser);
+        setNotification({ message: `Welcome, ${userInfo.given_name}!`, type: 'success' });
+        
+        // Immediately sync after login
+        await performSync(realUser);
+
+      } catch (error) {
+        console.error('Login failed', error);
+        setNotification({ message: 'Authentication failed', type: 'error' });
+      } finally {
+        setLoading(false);
+      }
+    },
+    onError: () => {
+      setNotification({ message: 'Login Failed', type: 'error' });
+    }
+  });
+
   const initiateSync = async () => {
     if (!currentUser) {
-      setShowAuthModal(true);
+      login(); // Trigger Google Login Popup
       return;
     }
-    await performSync();
+    await performSync(currentUser);
   };
 
-  const performSync = async () => {
+  const performSync = async (user: User) => {
     setLoading(true);
     setNotification({ message: 'Fetching recent messages...', type: 'success' });
     
     try {
-      // Simulate network delay for "fetching" emails/chats
+      // Simulate network delay
       await new Promise(resolve => setTimeout(resolve, 1500));
       
       const combinedInput = `
@@ -129,7 +159,6 @@ export const Dashboard: React.FC<DashboardProps> = () => {
         ${MOCK_CHATS}
       `;
       
-      // Use the user's key if available, otherwise it might fail if env is missing
       const newTasks = await analyzeContent(combinedInput, settings.geminiApiKey);
       
       setTasks(prev => {
@@ -140,27 +169,18 @@ export const Dashboard: React.FC<DashboardProps> = () => {
       
       setStats({ emailsScanned: 142, chatsScanned: 56 });
       setLastSynced(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-      setNotification({ message: 'Successfully synced and analyzed 7 days of history!', type: 'success' });
+      setNotification({ message: 'Successfully synced!', type: 'success' });
     } catch (e: any) {
       console.error(e);
       if (e.message?.includes('API Key is missing')) {
         setNotification({ message: 'Missing API Key. Please add it in Settings.', type: 'error' });
         setShowSettings(true);
       } else {
-        setNotification({ message: 'Failed to analyze content. Check API Key validity.', type: 'error' });
+        setNotification({ message: 'Failed to analyze content.', type: 'error' });
       }
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleAccountSelect = async (user: User) => {
-    setShowAuthModal(false);
-    setLoading(true);
-    setNotification({ message: `Connecting to ${user.email}...`, type: 'success' });
-    await new Promise(resolve => setTimeout(resolve, 1200));
-    setCurrentUser(user);
-    await performSync();
   };
 
   const handleDisconnect = () => {
@@ -169,6 +189,7 @@ export const Dashboard: React.FC<DashboardProps> = () => {
     setTasks([]);
     setStats({ emailsScanned: 0, chatsScanned: 0 });
     setNotification({ message: 'Account disconnected.', type: 'success' });
+    localStorage.removeItem('taskmind_user');
   };
 
   const handleManualAnalyze = async () => {
@@ -211,13 +232,6 @@ export const Dashboard: React.FC<DashboardProps> = () => {
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden">
-      {/* Modals */}
-      <AccountModal 
-        isOpen={showAuthModal} 
-        onClose={() => setShowAuthModal(false)}
-        onSelect={handleAccountSelect}
-        users={MOCK_USERS}
-      />
       <SettingsModal
         isOpen={showSettings}
         onClose={() => setShowSettings(false)}
@@ -266,9 +280,14 @@ export const Dashboard: React.FC<DashboardProps> = () => {
 
           {currentUser ? (
             <div className="mb-4 flex items-center gap-3 pb-4 border-b border-slate-700">
-              <div className={`w-8 h-8 rounded-full ${currentUser.avatarColor} text-white flex items-center justify-center font-bold text-xs`}>
-                {currentUser.name.charAt(0)}
-              </div>
+              {currentUser.avatarUrl ? (
+                <img src={currentUser.avatarUrl} alt="Avatar" className="w-8 h-8 rounded-full" />
+              ) : (
+                <div className={`w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-xs`}>
+                  {currentUser.name.charAt(0)}
+                </div>
+              )}
+              
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium text-white truncate">{currentUser.name}</div>
                 <div className="text-xs text-slate-400 truncate">{currentUser.email}</div>
@@ -304,7 +323,6 @@ export const Dashboard: React.FC<DashboardProps> = () => {
              <h1 className="text-xl font-semibold text-slate-800">
               {activeTab === 'overview' ? 'My Intelligent To-Do List' : 'Add New Context'}
             </h1>
-            {/* Drive Sync Status Indicator */}
             {settings.googleDriveConnected && (
               <div className="flex items-center gap-1.5 px-2 py-1 bg-green-50 rounded border border-green-100 text-xs text-green-700">
                 {isSavingToDrive ? (
@@ -331,7 +349,7 @@ export const Dashboard: React.FC<DashboardProps> = () => {
               <SettingsIcon size={20} />
             </button>
             <button 
-              onClick={initiateSync}
+              onClick={() => initiateSync()}
               disabled={loading}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${
                 currentUser 
@@ -348,7 +366,7 @@ export const Dashboard: React.FC<DashboardProps> = () => {
               )}
               {loading 
                 ? (currentUser ? 'Syncing...' : 'Connecting...') 
-                : (currentUser ? 'Sync Recent' : 'Connect Account')
+                : (currentUser ? 'Sync Recent' : 'Connect with Google')
               }
             </button>
           </div>
@@ -414,7 +432,7 @@ export const Dashboard: React.FC<DashboardProps> = () => {
                         }
                       </p>
                       <button 
-                        onClick={initiateSync}
+                        onClick={() => initiateSync()}
                         className="px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm"
                       >
                         {currentUser ? 'Scan Again' : 'Connect & Scan'}
