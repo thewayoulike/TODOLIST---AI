@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { GoogleOAuthProvider } from '@react-oauth/google';
+import { GoogleOAuthProvider } from '@react-oauth/google'; // Import this
 import App from './App';
 
 interface ErrorBoundaryProps {
@@ -52,12 +52,8 @@ if (!rootElement) {
 
 const root = ReactDOM.createRoot(rootElement);
 
-// This reads the ID from your Vercel Environment Variables
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || "";
-
-if (!GOOGLE_CLIENT_ID) {
-  console.warn("Missing VITE_GOOGLE_CLIENT_ID environment variable. Google Login will not work.");
-}
+// REPLACE THIS WITH YOUR ACTUAL CLIENT ID STRING
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || "YOUR_CLIENT_ID_HERE";
 
 root.render(
   <React.StrictMode>
