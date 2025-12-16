@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { GoogleOAuthProvider } from '@react-oauth/google';
 import App from './App';
 
 interface ErrorBoundaryProps {
@@ -50,10 +51,16 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
+
+// REPLACE THIS STRING WITH YOUR ACTUAL CLIENT ID
+const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID_HERE";
+
 root.render(
   <React.StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
+    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    </GoogleOAuthProvider>
   </React.StrictMode>
 );
