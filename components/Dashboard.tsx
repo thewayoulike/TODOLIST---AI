@@ -8,7 +8,6 @@ import {
   AlertCircle, Calendar, Sparkles, Link, Unlink, Settings as SettingsIcon, Cloud, Trash2
 } from 'lucide-react';
 import { analyzeContent } from '../services/gemini';
-// NOTE: We removed MOCK_CHATS/EMAILS imports to prevent dummy data usage
 import { Task, Priority, SourceType, User, AppSettings } from '../types';
 import { SettingsModal } from './SettingsModal';
 
@@ -18,8 +17,11 @@ const fetchRealGmail = async (accessToken: string) => {
     const listResponse = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10', {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
-    const listData = await listResponse.json();
     
+    // If this fails with 403, it means permissions are missing
+    if (!listResponse.ok) throw new Error(`Gmail API Error: ${listResponse.status}`);
+    
+    const listData = await listResponse.json();
     if (!listData.messages) return null;
 
     const emails = await Promise.all(listData.messages.map(async (msg: any) => {
@@ -104,15 +106,7 @@ export const Dashboard: React.FC = () => {
 
       if (settings.googleDriveConnected && settings.autoSave && accessToken) {
         setIsSavingToDrive(true);
-        saveToDrive(tasks, accessToken)
-          .then(() => {
-            setNotification({ message: 'Backup saved to Google Drive', type: 'success' });
-          })
-          .catch((err) => {
-            console.error(err);
-            // Don't show error toast every time, just log it
-          })
-          .finally(() => setIsSavingToDrive(false));
+        saveToDrive(tasks, accessToken).catch(console.error);
       }
     }
   }, [tasks, settings.googleDriveConnected, settings.autoSave, accessToken]);
@@ -133,8 +127,9 @@ export const Dashboard: React.FC = () => {
 
   const [stats, setStats] = useState({ emailsScanned: 0, chatsScanned: 0 });
 
-  // --- GOOGLE LOGIN ---
+  // --- GOOGLE LOGIN (CRITICAL FIX) ---
   const login = useGoogleLogin({
+    // WE MUST ASK FOR GMAIL PERMISSION HERE:
     scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/drive.file',
     
     onSuccess: async (tokenResponse) => {
@@ -182,7 +177,7 @@ export const Dashboard: React.FC = () => {
     await performSync(accessToken);
   };
 
-  // --- MAIN SYNC LOGIC (FIXED) ---
+  // --- MAIN SYNC LOGIC ---
   const performSync = async (token: string) => {
     setLoading(true);
     setNotification({ message: 'Scanning real emails...', type: 'success' });
@@ -192,7 +187,7 @@ export const Dashboard: React.FC = () => {
       const emailContent = await fetchRealGmail(token);
       
       if (!emailContent) {
-        setNotification({ message: 'No recent emails found in Inbox.', type: 'error' });
+        setNotification({ message: 'No recent emails found (or permission denied).', type: 'error' });
         setLoading(false);
         return;
       }
@@ -209,7 +204,7 @@ export const Dashboard: React.FC = () => {
       // 3. Analyze with Gemini
       const newTasks = await analyzeContent(combinedInput, settings.geminiApiKey);
       
-      // 4. OVERWRITE tasks (Fixes the "stuck dummy data" issue)
+      // 4. OVERWRITE tasks
       setTasks(newTasks);
       
       setStats({ 
@@ -221,12 +216,7 @@ export const Dashboard: React.FC = () => {
 
     } catch (e: any) {
       console.error(e);
-      if (e.message?.includes('API Key is missing')) {
-        setNotification({ message: 'Missing Gemini API Key. Check Settings.', type: 'error' });
-        setShowSettings(true);
-      } else {
-        setNotification({ message: 'Analysis failed.', type: 'error' });
-      }
+      setNotification({ message: 'Analysis failed. Check console for 403 errors.', type: 'error' });
     } finally {
       setLoading(false);
     }
@@ -237,11 +227,9 @@ export const Dashboard: React.FC = () => {
     setAccessToken(null);
     setTasks([]);
     setStats({ emailsScanned: 0, chatsScanned: 0 });
-    handleSaveSettings({ ...settings, googleDriveConnected: false });
     setNotification({ message: 'Disconnected.', type: 'success' });
   };
 
-  // --- NEW: Clear Data Button Logic ---
   const handleClearData = () => {
     if (window.confirm('Are you sure? This will wipe all current tasks.')) {
       setTasks([]);
@@ -347,7 +335,6 @@ export const Dashboard: React.FC = () => {
                 </div>
               </div>
               
-              {/* NEW CLEAR DATA BUTTON */}
               <button 
                 onClick={handleClearData}
                 className="w-full mt-3 flex items-center justify-center gap-2 text-xs text-red-400 hover:bg-slate-700 hover:text-red-300 py-2 rounded transition-colors"
@@ -365,9 +352,6 @@ export const Dashboard: React.FC = () => {
               </span>
               <span className={`w-2 h-2 rounded-full ${currentUser ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-slate-600'}`}></span>
             </div>
-            <p className="text-xs text-slate-500 mt-2 pt-2 border-t border-slate-700">
-              {currentUser ? `Last synced: ${lastSynced || 'Just now'}` : 'Not connected'}
-            </p>
           </div>
         </div>
       </aside>
@@ -428,7 +412,6 @@ export const Dashboard: React.FC = () => {
           </div>
         </header>
 
-        {/* Notification Toast */}
         {notification && (
           <div className={`absolute top-20 right-6 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium animate-fade-in-down flex items-center gap-2 ${notification.type === 'success' ? 'bg-green-100 text-green-800 border border-green-200' : 'bg-red-100 text-red-800 border border-red-200'}`}>
             {notification.type === 'error' ? <AlertCircle size={16} /> : <CheckSquare size={16} />}
@@ -546,7 +529,8 @@ export const Dashboard: React.FC = () => {
                     </div>
                   )}
                 </div>
-
+                
+                {/* Charts Area */}
                 <div className="space-y-6">
                   <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                     <h3 className="font-semibold text-slate-800 mb-4">Task Distribution</h3>
@@ -607,13 +591,6 @@ export const Dashboard: React.FC = () => {
           ) : (
             <div className="max-w-4xl mx-auto">
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8">
-                <div className="mb-6">
-                  <h2 className="text-lg font-semibold text-slate-800 mb-2">Manual Context Analysis</h2>
-                  <p className="text-slate-500 text-sm">
-                    Paste email threads, chat logs, or meeting notes below. 
-                  </p>
-                </div>
-                
                 <textarea
                   value={rawInput}
                   onChange={(e) => setRawInput(e.target.value)}
