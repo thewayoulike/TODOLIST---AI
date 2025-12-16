@@ -18,7 +18,8 @@ const fetchRealGmail = async (accessToken: string) => {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     
-    if (!listResponse.ok) return null; // Fail silently for mixed accounts
+    // Fail silently if permissions denied or mixed account issues
+    if (!listResponse.ok) return null; 
     
     const listData = await listResponse.json();
     if (!listData.messages) return null;
@@ -116,10 +117,12 @@ export const Dashboard: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings>({
     geminiApiKey: '',
     googleDriveConnected: false,
-    autoSave: true
+    autoSave: true,
+    customInstructions: '' // Initialize with empty string
   });
   const [isSavingToDrive, setIsSavingToDrive] = useState(false);
 
+  // Load Settings & Data from LocalStorage
   useEffect(() => {
     const savedSettings = localStorage.getItem('taskmind_settings');
     if (savedSettings) setSettings(JSON.parse(savedSettings));
@@ -131,6 +134,7 @@ export const Dashboard: React.FC = () => {
     if (savedUser) setCurrentUser(JSON.parse(savedUser));
   }, []);
 
+  // Save Tasks to LocalStorage & Drive
   useEffect(() => {
     if (tasks.length > 0) {
       localStorage.setItem('taskmind_tasks', JSON.stringify(tasks));
@@ -143,6 +147,7 @@ export const Dashboard: React.FC = () => {
     }
   }, [tasks, settings.googleDriveConnected, settings.autoSave, accessToken]);
 
+  // Persist User
   useEffect(() => {
     if (currentUser) localStorage.setItem('taskmind_user', JSON.stringify(currentUser));
     else localStorage.removeItem('taskmind_user');
@@ -155,7 +160,7 @@ export const Dashboard: React.FC = () => {
 
   const [stats, setStats] = useState({ emailsScanned: 0, chatsScanned: 0 });
 
-  // --- GOOGLE LOGIN WITH CHAT SCOPES ---
+  // --- GOOGLE LOGIN ---
   const login = useGoogleLogin({
     scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/chat.spaces.readonly https://www.googleapis.com/auth/chat.messages.readonly',
     
@@ -170,7 +175,7 @@ export const Dashboard: React.FC = () => {
         });
         const userInfo = await userInfoResponse.json();
 
-        // Determine if Workspace or Personal based on hd (hosted domain)
+        // Check if hosted domain exists (Workspace)
         const isWorkspace = !!userInfo.hd;
 
         const realUser: User = {
@@ -202,6 +207,7 @@ export const Dashboard: React.FC = () => {
     await performSync(accessToken);
   };
 
+  // --- MAIN SYNC LOGIC ---
   const performSync = async (token: string) => {
     setLoading(true);
     setNotification({ message: 'Scanning Workspace data...', type: 'success' });
@@ -229,8 +235,12 @@ export const Dashboard: React.FC = () => {
         ${chatContent || "(No recent chats or Personal account)"}
       `;
       
-      // 3. Analyze with Gemini
-      const newTasks = await analyzeContent(combinedInput, settings.geminiApiKey);
+      // 3. Analyze with Gemini (Pass Custom Instructions)
+      const newTasks = await analyzeContent(
+        combinedInput, 
+        settings.geminiApiKey,
+        settings.customInstructions // <--- NEW: Passing user rules
+      );
       
       setTasks(newTasks);
       
@@ -269,7 +279,12 @@ export const Dashboard: React.FC = () => {
     if (!rawInput.trim()) return;
     setLoading(true);
     try {
-      const newTasks = await analyzeContent(rawInput, settings.geminiApiKey);
+      // Analyze with Gemini (Pass Custom Instructions)
+      const newTasks = await analyzeContent(
+        rawInput, 
+        settings.geminiApiKey,
+        settings.customInstructions // <--- NEW: Passing user rules
+      );
       setTasks(prev => [...newTasks, ...prev]);
       setNotification({ message: 'Analysis complete!', type: 'success' });
       setRawInput('');
