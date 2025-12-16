@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useGoogleLogin } from '@react-oauth/google'; // Import the hook
+import { useGoogleLogin } from '@react-oauth/google';
 import { 
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie
 } from 'recharts';
@@ -8,18 +8,63 @@ import {
   AlertCircle, Calendar, Sparkles, Link, Unlink, Settings as SettingsIcon, Cloud
 } from 'lucide-react';
 import { analyzeContent } from '../services/gemini';
-import { MOCK_CHATS, MOCK_EMAILS } from '../utils/mockData'; // Removed MOCK_USERS
+import { MOCK_CHATS, MOCK_EMAILS } from '../utils/mockData';
 import { Task, Priority, SourceType, User, AppSettings } from '../types';
 import { SettingsModal } from './SettingsModal';
-// Removed AccountModal import
 
-interface DashboardProps {
-  // empty
-}
+// --- HELPER: Fetch Real Gmail ---
+const fetchRealGmail = async (accessToken: string) => {
+  try {
+    const listResponse = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    const listData = await listResponse.json();
+    
+    if (!listData.messages) return "No recent emails found.";
+
+    const emails = await Promise.all(listData.messages.map(async (msg: any) => {
+      const detailResponse = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      const detail = await detailResponse.json();
+      
+      const subject = detail.payload.headers.find((h: any) => h.name === 'Subject')?.value || '(No Subject)';
+      const from = detail.payload.headers.find((h: any) => h.name === 'From')?.value || 'Unknown';
+      
+      return `Subject: ${subject}\nFrom: ${from}\nSnippet: ${detail.snippet}\n---`;
+    }));
+
+    return emails.join('\n');
+  } catch (error) {
+    console.error("Error fetching Gmail:", error);
+    return "Failed to fetch real emails.";
+  }
+};
+
+// --- HELPER: Save to Google Drive ---
+const saveToDrive = async (tasks: Task[], accessToken: string) => {
+  const fileContent = JSON.stringify(tasks, null, 2);
+  const metadata = {
+    name: 'taskmind_backup.json',
+    mimeType: 'application/json',
+  };
+
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.append('file', new Blob([fileContent], { type: 'application/json' }));
+
+  const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
+  });
+  
+  if (!response.ok) throw new Error('Drive upload failed');
+};
 
 const COLORS = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b'];
 
-export const Dashboard: React.FC<DashboardProps> = () => {
+export const Dashboard: React.FC = () => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'raw'>('overview');
@@ -28,6 +73,7 @@ export const Dashboard: React.FC<DashboardProps> = () => {
   
   // Connection State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null); // Store token for Drive API
   const [lastSynced, setLastSynced] = useState<string | null>(null);
 
   // Settings & Drive State
@@ -39,23 +85,40 @@ export const Dashboard: React.FC<DashboardProps> = () => {
   });
   const [isSavingToDrive, setIsSavingToDrive] = useState(false);
 
-  // Load settings/tasks/USER from localStorage on mount
+  // Load from LocalStorage
   useEffect(() => {
     const savedSettings = localStorage.getItem('taskmind_settings');
-    if (savedSettings) {
-      setSettings(JSON.parse(savedSettings));
-    }
+    if (savedSettings) setSettings(JSON.parse(savedSettings));
+    
     const savedTasks = localStorage.getItem('taskmind_tasks');
-    if (savedTasks) {
-      setTasks(JSON.parse(savedTasks));
-    }
+    if (savedTasks) setTasks(JSON.parse(savedTasks));
+    
     const savedUser = localStorage.getItem('taskmind_user');
-    if (savedUser) {
-      setCurrentUser(JSON.parse(savedUser));
-    }
+    if (savedUser) setCurrentUser(JSON.parse(savedUser));
   }, []);
 
-  // Persist User to LocalStorage
+  // Save Tasks & Sync to Drive
+  useEffect(() => {
+    if (tasks.length > 0) {
+      localStorage.setItem('taskmind_tasks', JSON.stringify(tasks));
+
+      // Check if we have both the "Connected" setting AND a valid access token
+      if (settings.googleDriveConnected && settings.autoSave && accessToken) {
+        setIsSavingToDrive(true);
+        saveToDrive(tasks, accessToken)
+          .then(() => {
+            setNotification({ message: 'Backup saved to Google Drive', type: 'success' });
+          })
+          .catch((err) => {
+            console.error(err);
+            setNotification({ message: 'Drive sync failed', type: 'error' });
+          })
+          .finally(() => setIsSavingToDrive(false));
+      }
+    }
+  }, [tasks, settings.googleDriveConnected, settings.autoSave, accessToken]);
+
+  // Persist User
   useEffect(() => {
     if (currentUser) {
       localStorage.setItem('taskmind_user', JSON.stringify(currentUser));
@@ -64,46 +127,24 @@ export const Dashboard: React.FC<DashboardProps> = () => {
     }
   }, [currentUser]);
 
-  // Save tasks to "Drive" (simulated via localStorage + delay)
-  useEffect(() => {
-    if (tasks.length > 0) {
-      localStorage.setItem('taskmind_tasks', JSON.stringify(tasks));
-
-      if (settings.googleDriveConnected && settings.autoSave) {
-        setIsSavingToDrive(true);
-        const timer = setTimeout(() => {
-          setIsSavingToDrive(false);
-        }, 2000);
-        return () => clearTimeout(timer);
-      }
-    }
-  }, [tasks, settings.googleDriveConnected, settings.autoSave]);
-
   const handleSaveSettings = (newSettings: AppSettings) => {
     setSettings(newSettings);
     localStorage.setItem('taskmind_settings', JSON.stringify(newSettings));
-    
-    if (newSettings.googleDriveConnected && !settings.googleDriveConnected) {
-      setNotification({ message: 'Connected to Google Drive!', type: 'success' });
-    }
   };
 
-  // Stats for the "Last 7 Days" simulation
-  const [stats, setStats] = useState({
-    emailsScanned: 0,
-    chatsScanned: 0
-  });
+  const [stats, setStats] = useState({ emailsScanned: 0, chatsScanned: 0 });
 
-  // --------------------------------------------------------------------------
-  // GOOGLE LOGIN LOGIC
-  // --------------------------------------------------------------------------
+  // --- GOOGLE LOGIN ---
   const login = useGoogleLogin({
+    // Request permissions for GMAIL and DRIVE
+    scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/drive.file',
+    
     onSuccess: async (tokenResponse) => {
       setLoading(true);
+      setAccessToken(tokenResponse.access_token); // Save token for later use
       setNotification({ message: 'Authenticating...', type: 'success' });
 
       try {
-        // Fetch real user info from Google
         const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
           headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
         });
@@ -114,14 +155,18 @@ export const Dashboard: React.FC<DashboardProps> = () => {
           name: userInfo.name,
           email: userInfo.email,
           avatarUrl: userInfo.picture,
-          type: 'Personal' // Default to Personal
+          type: 'Personal'
         };
 
         setCurrentUser(realUser);
+        
+        // Auto-connect Drive setting if login succeeds
+        handleSaveSettings({ ...settings, googleDriveConnected: true });
+
         setNotification({ message: `Welcome, ${userInfo.given_name}!`, type: 'success' });
         
-        // Immediately sync after login
-        await performSync(realUser);
+        // Immediate Sync with the fresh token
+        await performSync(tokenResponse.access_token);
 
       } catch (error) {
         console.error('Login failed', error);
@@ -130,35 +175,35 @@ export const Dashboard: React.FC<DashboardProps> = () => {
         setLoading(false);
       }
     },
-    onError: () => {
-      setNotification({ message: 'Login Failed', type: 'error' });
-    }
+    onError: () => setNotification({ message: 'Login Failed', type: 'error' })
   });
 
   const initiateSync = async () => {
-    if (!currentUser) {
-      login(); // Trigger Google Login Popup
+    // If we don't have a token (or it expired), force login again
+    if (!accessToken) {
+      login();
       return;
     }
-    await performSync(currentUser);
+    await performSync(accessToken);
   };
 
-  const performSync = async (user: User) => {
+  const performSync = async (token: string) => {
     setLoading(true);
-    setNotification({ message: 'Fetching recent messages...', type: 'success' });
+    setNotification({ message: 'Scanning real emails...', type: 'success' });
     
     try {
-      // Simulate network delay
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      // 1. Fetch Real Emails
+      const emailContent = await fetchRealGmail(token);
       
       const combinedInput = `
-        --- RECENT EMAILS (Last 7 Days) ---
-        ${MOCK_EMAILS}
+        --- RECENT EMAILS (Fetched from Gmail) ---
+        ${emailContent}
         
-        --- RECENT CHATS (Last 7 Days) ---
+        --- RECENT CHATS ---
         ${MOCK_CHATS}
       `;
       
+      // 2. Analyze with Gemini
       const newTasks = await analyzeContent(combinedInput, settings.geminiApiKey);
       
       setTasks(prev => {
@@ -167,44 +212,13 @@ export const Dashboard: React.FC<DashboardProps> = () => {
         return [...uniqueNew, ...prev];
       });
       
-      setStats({ emailsScanned: 142, chatsScanned: 56 });
+      setStats({ emailsScanned: 10, chatsScanned: 0 });
       setLastSynced(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-      setNotification({ message: 'Successfully synced!', type: 'success' });
+      setNotification({ message: 'Synced with Gmail successfully!', type: 'success' });
     } catch (e: any) {
       console.error(e);
       if (e.message?.includes('API Key is missing')) {
-        setNotification({ message: 'Missing API Key. Please add it in Settings.', type: 'error' });
-        setShowSettings(true);
-      } else {
-        setNotification({ message: 'Failed to analyze content.', type: 'error' });
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDisconnect = () => {
-    setCurrentUser(null);
-    setLastSynced(null);
-    setTasks([]);
-    setStats({ emailsScanned: 0, chatsScanned: 0 });
-    setNotification({ message: 'Account disconnected.', type: 'success' });
-    localStorage.removeItem('taskmind_user');
-  };
-
-  const handleManualAnalyze = async () => {
-    if (!rawInput.trim()) return;
-    setLoading(true);
-    setNotification(null);
-    try {
-      const newTasks = await analyzeContent(rawInput, settings.geminiApiKey);
-      setTasks(prev => [...newTasks, ...prev]);
-      setNotification({ message: 'Analysis complete!', type: 'success' });
-      setRawInput('');
-      setActiveTab('overview');
-    } catch (e: any) {
-       if (e.message?.includes('API Key is missing')) {
-        setNotification({ message: 'Missing API Key. Please add it in Settings.', type: 'error' });
+        setNotification({ message: 'Missing Gemini API Key. Check Settings.', type: 'error' });
         setShowSettings(true);
       } else {
         setNotification({ message: 'Analysis failed.', type: 'error' });
@@ -214,10 +228,36 @@ export const Dashboard: React.FC<DashboardProps> = () => {
     }
   };
 
+  const handleDisconnect = () => {
+    setCurrentUser(null);
+    setAccessToken(null);
+    setTasks([]);
+    setStats({ emailsScanned: 0, chatsScanned: 0 });
+    handleSaveSettings({ ...settings, googleDriveConnected: false });
+    setNotification({ message: 'Disconnected.', type: 'success' });
+  };
+
+  const handleManualAnalyze = async () => {
+    if (!rawInput.trim()) return;
+    setLoading(true);
+    try {
+      const newTasks = await analyzeContent(rawInput, settings.geminiApiKey);
+      setTasks(prev => [...newTasks, ...prev]);
+      setNotification({ message: 'Analysis complete!', type: 'success' });
+      setRawInput('');
+      setActiveTab('overview');
+    } catch (e: any) {
+      setNotification({ message: 'Analysis failed.', type: 'error' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const toggleTaskCompletion = (id: string) => {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, isCompleted: !t.isCompleted } : t));
   };
 
+  // --- CHART DATA ---
   const priorityData = [
     { name: 'High', value: tasks.filter(t => t.priority === Priority.HIGH && !t.isCompleted).length },
     { name: 'Medium', value: tasks.filter(t => t.priority === Priority.MEDIUM && !t.isCompleted).length },
@@ -287,7 +327,6 @@ export const Dashboard: React.FC<DashboardProps> = () => {
                   {currentUser.name.charAt(0)}
                 </div>
               )}
-              
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium text-white truncate">{currentUser.name}</div>
                 <div className="text-xs text-slate-400 truncate">{currentUser.email}</div>
@@ -296,15 +335,9 @@ export const Dashboard: React.FC<DashboardProps> = () => {
           ) : null}
 
           <div className="space-y-3">
-            <div className="flex items-center justify-between text-sm">
+             <div className="flex items-center justify-between text-sm">
               <span className="flex items-center gap-2 text-slate-300">
                 <Mail size={14} /> Gmail
-              </span>
-              <span className={`w-2 h-2 rounded-full ${currentUser ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-slate-600'}`}></span>
-            </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="flex items-center gap-2 text-slate-300">
-                <MessageSquare size={14} /> G-Chat
               </span>
               <span className={`w-2 h-2 rounded-full ${currentUser ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-slate-600'}`}></span>
             </div>
@@ -317,7 +350,6 @@ export const Dashboard: React.FC<DashboardProps> = () => {
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col h-full overflow-hidden relative">
-        {/* Header */}
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0">
           <div className="flex items-center gap-4">
              <h1 className="text-xl font-semibold text-slate-800">
@@ -349,7 +381,7 @@ export const Dashboard: React.FC<DashboardProps> = () => {
               <SettingsIcon size={20} />
             </button>
             <button 
-              onClick={() => initiateSync()}
+              onClick={initiateSync}
               disabled={loading}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${
                 currentUser 
@@ -365,8 +397,8 @@ export const Dashboard: React.FC<DashboardProps> = () => {
                 <Link className="w-4 h-4" />
               )}
               {loading 
-                ? (currentUser ? 'Syncing...' : 'Connecting...') 
-                : (currentUser ? 'Sync Recent' : 'Connect with Google')
+                ? (currentUser ? 'Scanning...' : 'Connecting...') 
+                : (currentUser ? 'Scan Gmail' : 'Connect Account')
               }
             </button>
           </div>
@@ -384,20 +416,19 @@ export const Dashboard: React.FC<DashboardProps> = () => {
         <div className="flex-1 overflow-auto p-6">
           {activeTab === 'overview' ? (
             <div className="max-w-6xl mx-auto space-y-6">
-              {/* Stats Row */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                   <h3 className="text-sm font-medium text-slate-500 mb-1">Emails Scanned</h3>
                   <div className="text-2xl font-bold text-slate-800">{stats.emailsScanned}</div>
                   <div className="text-xs text-green-600 mt-1 flex items-center">
-                    {currentUser ? 'From last 7 days' : 'Waiting for sync...'}
+                    {currentUser ? 'From recent inbox' : 'Waiting for sync...'}
                   </div>
                 </div>
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                   <h3 className="text-sm font-medium text-slate-500 mb-1">Chats Processed</h3>
                   <div className="text-2xl font-bold text-slate-800">{stats.chatsScanned}</div>
-                  <div className="text-xs text-green-600 mt-1 flex items-center">
-                    {currentUser ? 'From last 7 days' : 'Waiting for sync...'}
+                  <div className="text-xs text-slate-400 mt-1 flex items-center">
+                     (Chat API requires Work account)
                   </div>
                 </div>
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
@@ -410,7 +441,6 @@ export const Dashboard: React.FC<DashboardProps> = () => {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
-                {/* Task List Column */}
                 <div className="lg:col-span-2 space-y-4">
                   <h2 className="font-semibold text-slate-700 flex items-center gap-2">
                     <CheckSquare size={18} />
@@ -423,19 +453,19 @@ export const Dashboard: React.FC<DashboardProps> = () => {
                         {currentUser ? <Sparkles className="w-8 h-8 text-indigo-500" /> : <Link className="w-8 h-8 text-slate-400" />}
                       </div>
                       <h3 className="text-lg font-medium text-slate-800 mb-2">
-                        {currentUser ? 'All caught up!' : 'Connect your accounts'}
+                        {currentUser ? 'Ready to scan' : 'Connect your accounts'}
                       </h3>
                       <p className="text-slate-500 max-w-sm mx-auto mb-6">
                         {currentUser 
-                          ? 'We scanned your history and found no pending tasks, or you have completed them all.' 
-                          : 'Securely connect your Gmail and Google Chat to let AI extract your to-do list automatically.'
+                          ? 'Click the button above to scan your recent emails for tasks.' 
+                          : 'Securely connect your Gmail to let AI extract your to-do list automatically.'
                         }
                       </p>
                       <button 
-                        onClick={() => initiateSync()}
+                        onClick={initiateSync}
                         className="px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm"
                       >
-                        {currentUser ? 'Scan Again' : 'Connect & Scan'}
+                        {currentUser ? 'Scan Inbox Now' : 'Connect & Scan'}
                       </button>
                     </div>
                   ) : (
@@ -493,7 +523,6 @@ export const Dashboard: React.FC<DashboardProps> = () => {
                   )}
                 </div>
 
-                {/* Right Analytics Column */}
                 <div className="space-y-6">
                   <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                     <h3 className="font-semibold text-slate-800 mb-4">Task Distribution</h3>
@@ -517,11 +546,6 @@ export const Dashboard: React.FC<DashboardProps> = () => {
                             <Tooltip />
                           </PieChart>
                         </ResponsiveContainer>
-                        <div className="flex justify-center gap-4 text-xs text-slate-500">
-                          <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-red-500"></div>High</div>
-                          <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-yellow-500"></div>Med</div>
-                          <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-blue-500"></div>Low</div>
-                        </div>
                       </div>
                     ) : (
                       <div className="h-48 flex items-center justify-center text-slate-400 text-sm">
@@ -557,52 +581,33 @@ export const Dashboard: React.FC<DashboardProps> = () => {
               </div>
             </div>
           ) : (
-            /* RAW INPUT TAB */
             <div className="max-w-4xl mx-auto">
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8">
                 <div className="mb-6">
                   <h2 className="text-lg font-semibold text-slate-800 mb-2">Manual Context Analysis</h2>
                   <p className="text-slate-500 text-sm">
                     Paste email threads, chat logs, or meeting notes below. 
-                    Gemini AI will analyze the text to extract action items automatically.
                   </p>
                 </div>
                 
                 <textarea
                   value={rawInput}
                   onChange={(e) => setRawInput(e.target.value)}
-                  placeholder="Paste your email content or chat logs here..."
-                  className="w-full h-64 p-4 rounded-lg border border-slate-200 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none resize-none font-mono text-sm mb-6"
+                  placeholder="Paste your content here..."
+                  className="w-full h-64 p-4 rounded-lg border border-slate-200 focus:border-blue-500 outline-none resize-none font-mono text-sm mb-6"
                 ></textarea>
                 
                 <div className="flex items-center justify-end gap-3">
-                  <button 
-                    onClick={() => setRawInput('')}
-                    className="px-4 py-2 text-slate-500 hover:text-slate-700 font-medium text-sm"
-                  >
-                    Clear
-                  </button>
+                  <button onClick={() => setRawInput('')} className="px-4 py-2 text-slate-500 text-sm">Clear</button>
                   <button 
                     onClick={handleManualAnalyze}
                     disabled={loading || !rawInput.trim()}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                    className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm disabled:opacity-50"
                   >
                     {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                     Analyze & Extract Tasks
                   </button>
                 </div>
-              </div>
-
-              <div className="mt-8 p-6 bg-blue-50 rounded-xl border border-blue-100">
-                <h3 className="font-semibold text-blue-900 mb-2 flex items-center gap-2">
-                  <span className="bg-blue-200 text-blue-700 text-xs px-2 py-0.5 rounded font-bold">TIP</span>
-                  How to use
-                </h3>
-                <ul className="list-disc list-inside text-sm text-blue-800 space-y-1 ml-1">
-                  <li>Copy text from any digital source (Slack, Teams, Gmail, Docs).</li>
-                  <li>Gemini will look for keywords like "deadline", "urgent", "please do X".</li>
-                  <li>It automatically determines priority based on the tone of the message.</li>
-                </ul>
               </div>
             </div>
           )}
