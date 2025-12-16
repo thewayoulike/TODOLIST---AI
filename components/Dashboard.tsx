@@ -293,10 +293,10 @@ export const Dashboard: React.FC = () => {
   // Helper to render a task list
   const renderTaskList = (listTasks: Task[], emptyMsg: string) => {
     if (listTasks.length === 0) {
-      return <div className="p-8 text-center text-slate-400 text-sm italic">{emptyMsg}</div>;
+      return <div className="p-8 text-center text-slate-400 text-sm italic border border-dashed border-slate-200 rounded-xl bg-slate-50">{emptyMsg}</div>;
     }
     return (
-      <div className="bg-white divide-y divide-slate-100">
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden divide-y divide-slate-100">
         {listTasks.map(task => (
           <div key={task.id} className={`p-4 hover:bg-slate-50 transition-colors group ${task.isCompleted ? 'opacity-50' : ''}`}>
             <div className="flex items-start gap-4">
@@ -479,52 +479,51 @@ export const Dashboard: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
-                <div className="lg:col-span-2 space-y-6">
-                  {/* === EMAIL LIST === */}
-                  <div>
-                    <h2 className="font-semibold text-slate-700 flex items-center gap-2 mb-3">
-                      <Mail size={18} className="text-blue-500" />
-                      Email Action Items
-                      <span className="text-xs bg-slate-100 px-2 py-0.5 rounded-full text-slate-500 font-normal">
-                        {emailTasks.length}
-                      </span>
-                    </h2>
-                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                      {renderTaskList(emailTasks, "No email tasks found.")}
-                    </div>
-                  </div>
-
-                  {/* === CHAT LIST === */}
-                  <div>
-                    <h2 className="font-semibold text-slate-700 flex items-center gap-2 mb-3">
-                      <MessageSquare size={18} className="text-purple-500" />
-                      Chat Action Items
-                      <span className="text-xs bg-slate-100 px-2 py-0.5 rounded-full text-slate-500 font-normal">
-                        {chatTasks.length}
-                      </span>
-                    </h2>
-                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                      {renderTaskList(chatTasks, "No chat tasks found.")}
-                    </div>
-                  </div>
-
-                   {/* === MANUAL LIST (Only show if there are manual tasks) === */}
-                   {manualTasks.length > 0 && (
-                    <div>
-                      <h2 className="font-semibold text-slate-700 flex items-center gap-2 mb-3">
-                        <ListTodo size={18} className="text-slate-500" />
-                        Other Action Items
+                {/* === LEFT COLUMN: Task Lists === */}
+                <div className="lg:col-span-2">
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
+                    
+                    {/* EMAIL LIST */}
+                    <div className="flex flex-col gap-3">
+                      <h2 className="font-semibold text-slate-700 flex items-center gap-2">
+                        <Mail size={18} className="text-blue-500" />
+                        Email Tasks
                         <span className="text-xs bg-slate-100 px-2 py-0.5 rounded-full text-slate-500 font-normal">
-                          {manualTasks.length}
+                          {emailTasks.length}
                         </span>
                       </h2>
-                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                      {renderTaskList(emailTasks, "No email tasks found.")}
+                    </div>
+
+                    {/* CHAT LIST */}
+                    <div className="flex flex-col gap-3">
+                      <h2 className="font-semibold text-slate-700 flex items-center gap-2">
+                        <MessageSquare size={18} className="text-purple-500" />
+                        Chat Tasks
+                        <span className="text-xs bg-slate-100 px-2 py-0.5 rounded-full text-slate-500 font-normal">
+                          {chatTasks.length}
+                        </span>
+                      </h2>
+                      {renderTaskList(chatTasks, "No chat tasks found.")}
+                    </div>
+
+                    {/* MANUAL/OTHER LIST (Conditional) */}
+                    {manualTasks.length > 0 && (
+                      <div className="flex flex-col gap-3 xl:col-span-2">
+                         <h2 className="font-semibold text-slate-700 flex items-center gap-2">
+                          <ListTodo size={18} className="text-slate-500" />
+                          Other Action Items
+                          <span className="text-xs bg-slate-100 px-2 py-0.5 rounded-full text-slate-500 font-normal">
+                            {manualTasks.length}
+                          </span>
+                        </h2>
                         {renderTaskList(manualTasks, "No manual tasks found.")}
                       </div>
-                    </div>
-                   )}
+                    )}
+                  </div>
                 </div>
                 
+                {/* === RIGHT COLUMN: Charts === */}
                 <div className="space-y-6">
                   <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                     <h3 className="font-semibold text-slate-800 mb-4">Task Distribution</h3>
