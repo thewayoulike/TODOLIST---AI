@@ -1,0 +1,5 @@
+{
+  "name": "TaskMind AI",
+  "description": "An intelligent productivity assistant that analyzes your communication logs (Emails, Google Chat) to automatically extract and organize actionable to-do lists using Gemini 2.5 Flash.",
+  "requestFramePermissions": []
+}
