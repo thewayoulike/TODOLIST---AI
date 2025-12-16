@@ -5,7 +5,8 @@ import {
 } from 'recharts';
 import { 
   LayoutDashboard, Mail, MessageSquare, CheckSquare, Loader2, Plus, RefreshCw,
-  AlertCircle, Calendar, Sparkles, Link, Unlink, Settings as SettingsIcon, Cloud, Trash2
+  AlertCircle, Calendar, Sparkles, Link, Unlink, Settings as SettingsIcon, Cloud, Trash2,
+  ListTodo
 } from 'lucide-react';
 import { analyzeContent } from '../services/gemini';
 import { Task, Priority, SourceType, User, AppSettings } from '../types';
@@ -18,7 +19,6 @@ const fetchRealGmail = async (accessToken: string) => {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     
-    // Fail silently if permissions denied or mixed account issues
     if (!listResponse.ok) return null; 
     
     const listData = await listResponse.json();
@@ -46,17 +46,15 @@ const fetchRealGmail = async (accessToken: string) => {
 // --- HELPER: Fetch Real Google Chat (Workspace Only) ---
 const fetchRealChats = async (accessToken: string) => {
   try {
-    // 1. List 'Spaces' (Direct Messages and Rooms)
     const spacesRes = await fetch('https://chat.googleapis.com/v1/spaces', {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
 
-    if (!spacesRes.ok) return null; // Will fail if not Workspace
+    if (!spacesRes.ok) return null; 
 
     const spacesData = await spacesRes.json();
     if (!spacesData.spaces) return null;
 
-    // 2. Fetch last 3 messages from the top 3 active spaces
     const activeSpaces = spacesData.spaces.slice(0, 3);
     
     const chatLogs = await Promise.all(activeSpaces.map(async (space: any) => {
@@ -76,7 +74,6 @@ const fetchRealChats = async (accessToken: string) => {
 
     return chatLogs.join('\n');
   } catch (error) {
-    console.error("Error fetching Chats:", error);
     return null;
   }
 };
@@ -118,11 +115,10 @@ export const Dashboard: React.FC = () => {
     geminiApiKey: '',
     googleDriveConnected: false,
     autoSave: true,
-    customInstructions: '' // Initialize with empty string
+    customInstructions: ''
   });
   const [isSavingToDrive, setIsSavingToDrive] = useState(false);
 
-  // Load Settings & Data from LocalStorage
   useEffect(() => {
     const savedSettings = localStorage.getItem('taskmind_settings');
     if (savedSettings) setSettings(JSON.parse(savedSettings));
@@ -134,20 +130,18 @@ export const Dashboard: React.FC = () => {
     if (savedUser) setCurrentUser(JSON.parse(savedUser));
   }, []);
 
-  // Save Tasks to LocalStorage & Drive
   useEffect(() => {
     if (tasks.length > 0) {
       localStorage.setItem('taskmind_tasks', JSON.stringify(tasks));
       if (settings.googleDriveConnected && settings.autoSave && accessToken) {
         setIsSavingToDrive(true);
         saveToDrive(tasks, accessToken)
-          .catch(() => {}) // Silent fail
+          .catch(() => {}) 
           .finally(() => setIsSavingToDrive(false));
       }
     }
   }, [tasks, settings.googleDriveConnected, settings.autoSave, accessToken]);
 
-  // Persist User
   useEffect(() => {
     if (currentUser) localStorage.setItem('taskmind_user', JSON.stringify(currentUser));
     else localStorage.removeItem('taskmind_user');
@@ -160,7 +154,6 @@ export const Dashboard: React.FC = () => {
 
   const [stats, setStats] = useState({ emailsScanned: 0, chatsScanned: 0 });
 
-  // --- GOOGLE LOGIN ---
   const login = useGoogleLogin({
     scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/chat.spaces.readonly https://www.googleapis.com/auth/chat.messages.readonly',
     
@@ -174,8 +167,6 @@ export const Dashboard: React.FC = () => {
           headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
         });
         const userInfo = await userInfoResponse.json();
-
-        // Check if hosted domain exists (Workspace)
         const isWorkspace = !!userInfo.hd;
 
         const realUser: User = {
@@ -207,16 +198,12 @@ export const Dashboard: React.FC = () => {
     await performSync(accessToken);
   };
 
-  // --- MAIN SYNC LOGIC ---
   const performSync = async (token: string) => {
     setLoading(true);
-    setNotification({ message: 'Scanning Workspace data...', type: 'success' });
+    setNotification({ message: 'Scanning data...', type: 'success' });
     
     try {
-      // 1. Fetch Real Emails
       const emailContent = await fetchRealGmail(token);
-      
-      // 2. Fetch Real Chats (Workspace)
       const chatContent = await fetchRealChats(token);
 
       if (!emailContent && !chatContent) {
@@ -235,11 +222,10 @@ export const Dashboard: React.FC = () => {
         ${chatContent || "(No recent chats or Personal account)"}
       `;
       
-      // 3. Analyze with Gemini (Pass Custom Instructions)
       const newTasks = await analyzeContent(
         combinedInput, 
         settings.geminiApiKey,
-        settings.customInstructions // <--- NEW: Passing user rules
+        settings.customInstructions
       );
       
       setTasks(newTasks);
@@ -253,7 +239,7 @@ export const Dashboard: React.FC = () => {
 
     } catch (e: any) {
       console.error(e);
-      setNotification({ message: 'Analysis failed.', type: 'error' });
+      setNotification({ message: 'Analysis failed. Check API Key.', type: 'error' });
     } finally {
       setLoading(false);
     }
@@ -279,11 +265,10 @@ export const Dashboard: React.FC = () => {
     if (!rawInput.trim()) return;
     setLoading(true);
     try {
-      // Analyze with Gemini (Pass Custom Instructions)
       const newTasks = await analyzeContent(
         rawInput, 
         settings.geminiApiKey,
-        settings.customInstructions // <--- NEW: Passing user rules
+        settings.customInstructions
       );
       setTasks(prev => [...newTasks, ...prev]);
       setNotification({ message: 'Analysis complete!', type: 'success' });
@@ -298,6 +283,61 @@ export const Dashboard: React.FC = () => {
 
   const toggleTaskCompletion = (id: string) => {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, isCompleted: !t.isCompleted } : t));
+  };
+
+  // --- SEPARATE TASKS BY SOURCE ---
+  const emailTasks = tasks.filter(t => t.sourceType === SourceType.GMAIL);
+  const chatTasks = tasks.filter(t => t.sourceType === SourceType.CHAT);
+  const manualTasks = tasks.filter(t => t.sourceType !== SourceType.GMAIL && t.sourceType !== SourceType.CHAT);
+
+  // Helper to render a task list
+  const renderTaskList = (listTasks: Task[], emptyMsg: string) => {
+    if (listTasks.length === 0) {
+      return <div className="p-8 text-center text-slate-400 text-sm italic">{emptyMsg}</div>;
+    }
+    return (
+      <div className="bg-white divide-y divide-slate-100">
+        {listTasks.map(task => (
+          <div key={task.id} className={`p-4 hover:bg-slate-50 transition-colors group ${task.isCompleted ? 'opacity-50' : ''}`}>
+            <div className="flex items-start gap-4">
+              <button 
+                onClick={() => toggleTaskCompletion(task.id)}
+                className={`mt-1 w-5 h-5 rounded border flex-shrink-0 flex items-center justify-center transition-colors ${task.isCompleted ? 'bg-blue-500 border-blue-500 text-white' : 'border-slate-300 hover:border-blue-500'}`}
+              >
+                {task.isCompleted && <CheckSquare size={14} />}
+              </button>
+              
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between mb-1">
+                  <h3 className={`font-medium text-slate-900 truncate ${task.isCompleted ? 'line-through text-slate-500' : ''}`}>
+                    {task.title}
+                  </h3>
+                  <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-wide ${
+                    task.priority === Priority.HIGH ? 'bg-red-100 text-red-700' :
+                    task.priority === Priority.MEDIUM ? 'bg-yellow-100 text-yellow-700' :
+                    'bg-blue-100 text-blue-700'
+                  }`}>
+                    {task.priority}
+                  </span>
+                </div>
+                <p className="text-sm text-slate-600 mb-2">{task.description}</p>
+                <div className="flex items-center gap-4 text-xs text-slate-400">
+                  {task.dueDate && (
+                    <span className="flex items-center gap-1 text-orange-600 bg-orange-50 px-2 py-1 rounded">
+                      <Calendar size={12} /> Due: {task.dueDate}
+                    </span>
+                  )}
+                  <span className="ml-auto">Confidence: {task.confidenceScore}%</span>
+                </div>
+                <div className="mt-3 p-2 bg-slate-50 rounded border border-slate-100 text-xs text-slate-500 italic">
+                  " {task.sourceContext} "
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
   };
 
   const priorityData = [
@@ -439,72 +479,50 @@ export const Dashboard: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
-                <div className="lg:col-span-2 space-y-4">
-                  <h2 className="font-semibold text-slate-700 flex items-center gap-2">
-                    <CheckSquare size={18} /> Action Items
-                  </h2>
-                  
-                  {tasks.length === 0 ? (
-                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-12 text-center">
-                      <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${currentUser ? 'bg-indigo-50' : 'bg-slate-100'}`}>
-                        {currentUser ? <Sparkles className="w-8 h-8 text-indigo-500" /> : <Link className="w-8 h-8 text-slate-400" />}
+                <div className="lg:col-span-2 space-y-6">
+                  {/* === EMAIL LIST === */}
+                  <div>
+                    <h2 className="font-semibold text-slate-700 flex items-center gap-2 mb-3">
+                      <Mail size={18} className="text-blue-500" />
+                      Email Action Items
+                      <span className="text-xs bg-slate-100 px-2 py-0.5 rounded-full text-slate-500 font-normal">
+                        {emailTasks.length}
+                      </span>
+                    </h2>
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                      {renderTaskList(emailTasks, "No email tasks found.")}
+                    </div>
+                  </div>
+
+                  {/* === CHAT LIST === */}
+                  <div>
+                    <h2 className="font-semibold text-slate-700 flex items-center gap-2 mb-3">
+                      <MessageSquare size={18} className="text-purple-500" />
+                      Chat Action Items
+                      <span className="text-xs bg-slate-100 px-2 py-0.5 rounded-full text-slate-500 font-normal">
+                        {chatTasks.length}
+                      </span>
+                    </h2>
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                      {renderTaskList(chatTasks, "No chat tasks found.")}
+                    </div>
+                  </div>
+
+                   {/* === MANUAL LIST (Only show if there are manual tasks) === */}
+                   {manualTasks.length > 0 && (
+                    <div>
+                      <h2 className="font-semibold text-slate-700 flex items-center gap-2 mb-3">
+                        <ListTodo size={18} className="text-slate-500" />
+                        Other Action Items
+                        <span className="text-xs bg-slate-100 px-2 py-0.5 rounded-full text-slate-500 font-normal">
+                          {manualTasks.length}
+                        </span>
+                      </h2>
+                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                        {renderTaskList(manualTasks, "No manual tasks found.")}
                       </div>
-                      <h3 className="text-lg font-medium text-slate-800 mb-2">
-                        {currentUser ? 'Ready to scan' : 'Connect your accounts'}
-                      </h3>
-                      <button 
-                        onClick={initiateSync}
-                        className="px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm"
-                      >
-                        {currentUser ? 'Scan Workspace Now' : 'Connect & Scan'}
-                      </button>
                     </div>
-                  ) : (
-                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 divide-y divide-slate-100">
-                      {tasks.map(task => (
-                        <div key={task.id} className={`p-4 hover:bg-slate-50 transition-colors group ${task.isCompleted ? 'opacity-50' : ''}`}>
-                          <div className="flex items-start gap-4">
-                            <button 
-                              onClick={() => toggleTaskCompletion(task.id)}
-                              className={`mt-1 w-5 h-5 rounded border flex-shrink-0 flex items-center justify-center transition-colors ${task.isCompleted ? 'bg-blue-500 border-blue-500 text-white' : 'border-slate-300 hover:border-blue-500'}`}
-                            >
-                              {task.isCompleted && <CheckSquare size={14} />}
-                            </button>
-                            
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center justify-between mb-1">
-                                <h3 className={`font-medium text-slate-900 truncate ${task.isCompleted ? 'line-through text-slate-500' : ''}`}>
-                                  {task.title}
-                                </h3>
-                                <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-wide ${
-                                  task.priority === Priority.HIGH ? 'bg-red-100 text-red-700' :
-                                  task.priority === Priority.MEDIUM ? 'bg-yellow-100 text-yellow-700' :
-                                  'bg-blue-100 text-blue-700'
-                                }`}>
-                                  {task.priority}
-                                </span>
-                              </div>
-                              <p className="text-sm text-slate-600 mb-2">{task.description}</p>
-                              <div className="flex items-center gap-4 text-xs text-slate-400">
-                                <span className="flex items-center gap-1 bg-slate-100 px-2 py-1 rounded">
-                                  {task.sourceType === SourceType.GMAIL ? <Mail size={12} /> : task.sourceType === SourceType.CHAT ? <MessageSquare size={12} /> : <LayoutDashboard size={12} />}
-                                  {task.sourceType}
-                                </span>
-                                {task.dueDate && (
-                                  <span className="flex items-center gap-1 text-orange-600 bg-orange-50 px-2 py-1 rounded">
-                                    <Calendar size={12} /> Due: {task.dueDate}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="mt-3 p-2 bg-slate-50 rounded border border-slate-100 text-xs text-slate-500 italic">
-                                " {task.sourceContext} "
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                   )}
                 </div>
                 
                 <div className="space-y-6">
