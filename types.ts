@@ -16,10 +16,10 @@ export interface Task {
   description?: string;
   priority: Priority;
   sourceType: SourceType;
-  sourceContext: string; // The snippet of text that generated this task
+  sourceContext: string;
   dueDate?: string;
   isCompleted: boolean;
-  confidenceScore: number; // 0-100
+  confidenceScore: number;
 }
 
 export interface ProcessingStats {
@@ -32,7 +32,8 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  avatarColor: string;
+  avatarUrl?: string; // Added this for real Google Image
+  avatarColor?: string; // Kept this as fallback
   type: 'Personal' | 'Work';
 }
 
