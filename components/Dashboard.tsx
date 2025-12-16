@@ -222,20 +222,32 @@ export const Dashboard: React.FC = () => {
         ${chatContent || "(No recent chats or Personal account)"}
       `;
       
-      const newTasks = await analyzeContent(
+      const fetchedTasks = await analyzeContent(
         combinedInput, 
         settings.geminiApiKey,
         settings.customInstructions
       );
       
-      setTasks(newTasks);
+      // --- FIX: MERGE TASKS INSTEAD OF OVERWRITING ---
+      setTasks(prev => {
+        // 1. Create a set of existing task titles (lowercase for case-insensitive match)
+        const existingTitles = new Set(prev.map(t => t.title.trim().toLowerCase()));
+        
+        // 2. Only allow new tasks if their title doesn't already exist
+        const uniqueNewTasks = fetchedTasks.filter(t => 
+          !existingTitles.has(t.title.trim().toLowerCase())
+        );
+        
+        // 3. Put new tasks at the top, keep old tasks (including resolved ones) at the bottom
+        return [...uniqueNewTasks, ...prev];
+      });
       
       setStats({ 
         emailsScanned: emailContent ? 10 : 0, 
         chatsScanned: chatContent ? 5 : 0 
       });
       setLastSynced(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-      setNotification({ message: `Found ${newTasks.length} tasks!`, type: 'success' });
+      setNotification({ message: `Scan complete.`, type: 'success' });
 
     } catch (e: any) {
       console.error(e);
@@ -270,7 +282,14 @@ export const Dashboard: React.FC = () => {
         settings.geminiApiKey,
         settings.customInstructions
       );
-      setTasks(prev => [...newTasks, ...prev]);
+      
+      // --- FIX: MERGE HERE TOO ---
+      setTasks(prev => {
+        const existingTitles = new Set(prev.map(t => t.title.trim().toLowerCase()));
+        const uniqueNew = newTasks.filter(t => !existingTitles.has(t.title.trim().toLowerCase()));
+        return [...uniqueNew, ...prev];
+      });
+
       setNotification({ message: 'Analysis complete!', type: 'success' });
       setRawInput('');
       setActiveTab('overview');
