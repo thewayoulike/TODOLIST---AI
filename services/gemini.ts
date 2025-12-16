@@ -1,22 +1,19 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Task, Priority, SourceType } from "../types";
 
-// Helper to generate a unique ID
 const generateId = () => Math.random().toString(36).substring(2, 9);
 
-export const analyzeContent = async (text: string, userApiKey?: string): Promise<Task[]> => {
+// UPDATE: Accept 'customInstructions' as the 3rd argument
+export const analyzeContent = async (text: string, userApiKey?: string, customInstructions?: string): Promise<Task[]> => {
   let envKey = undefined;
   
-  // Defensive check for environment variable that won't crash the browser
   try {
     // @ts-ignore
     if (typeof process !== 'undefined' && process && process.env) {
       // @ts-ignore
       envKey = process.env.API_KEY;
     }
-  } catch (e) {
-    // Ignore reference errors if process is not defined
-  }
+  } catch (e) {}
 
   const apiKey = userApiKey || envKey;
 
@@ -25,6 +22,11 @@ export const analyzeContent = async (text: string, userApiKey?: string): Promise
   }
 
   const ai = new GoogleGenAI({ apiKey: apiKey });
+
+  // Inject custom instructions if they exist
+  const additionalRules = customInstructions 
+    ? `\n    USER CUSTOM RULES (IMPORTANT): ${customInstructions}` 
+    : "";
 
   const systemInstruction = `
     You are an expert productivity assistant. 
@@ -36,6 +38,7 @@ export const analyzeContent = async (text: string, userApiKey?: string): Promise
     3. Infer source type based on context clues (e.g., "Subject:" implies Email, names/timestamps often imply Chat).
     4. Extract the specific context sentence that triggered the task.
     5. Set a confidence score (0-100) based on how clear the task is.
+    ${additionalRules}
   `;
 
   const prompt = `
@@ -76,12 +79,10 @@ export const analyzeContent = async (text: string, userApiKey?: string): Promise
 
     const parsedData = JSON.parse(jsonRaw);
 
-    // Map to our internal Task interface
     return parsedData.map((item: any) => ({
       ...item,
       id: generateId(),
       isCompleted: false,
-      // Ensure enum matching
       priority: Object.values(Priority).includes(item.priority) ? item.priority : Priority.MEDIUM,
       sourceType: Object.values(SourceType).includes(item.sourceType) ? item.sourceType : SourceType.MANUAL,
     }));
